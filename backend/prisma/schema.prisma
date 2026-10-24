@@ -1,0 +1,840 @@
+// Peculium data model.
+// Names follow docs/convencoes.md (code in English, glossary in section 1).
+// Everything Prisma cannot express (check constraints, FK to auth.users, audit lock,
+// RLS, views) lives in the hand-written SQL migrations next to the generated one.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ===== Enums =====
+
+enum MemberRole {
+  OWNER
+  EDITOR
+  CONTRIBUTOR
+  VIEWER
+
+  @@map("member_role")
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  CANCELED
+
+  @@map("invitation_status")
+}
+
+enum AccountType {
+  CHECKING
+  SAVINGS
+  WALLET
+  INVESTMENT
+  CREDIT_CARD
+
+  @@map("account_type")
+}
+
+enum PhysicalCardType {
+  HOLDER
+  ADDITIONAL
+  VIRTUAL
+
+  @@map("physical_card_type")
+}
+
+enum CategoryKind {
+  INCOME
+  EXPENSE
+
+  @@map("category_kind")
+}
+
+enum SystemCategory {
+  INTEREST_PENALTY_PAID
+  INTEREST_PENALTY_RECEIVED
+  REIMBURSEMENT
+
+  @@map("system_category")
+}
+
+enum Nature {
+  PAYABLE
+  RECEIVABLE
+
+  @@map("nature")
+}
+
+enum BillStatus {
+  OPEN
+  PARTIAL
+  PAID
+  CANCELED
+
+  @@map("bill_status")
+}
+
+enum SplitMode {
+  AMOUNT
+  PERCENTAGE
+
+  @@map("split_mode")
+}
+
+enum SettlementReason {
+  PAYMENT
+  LOSS
+  ABATEMENT
+
+  @@map("settlement_reason")
+}
+
+enum Direction {
+  INFLOW
+  OUTFLOW
+
+  @@map("direction")
+}
+
+enum MovementOrigin {
+  SETTLEMENT
+  TRANSFER
+  ADJUSTMENT
+  OPENING_BALANCE
+  REVERSAL
+
+  @@map("movement_origin")
+}
+
+enum InvoiceStatus {
+  FUTURE
+  OPEN
+  CLOSED
+  PAID
+  PARTIALLY_PAID
+
+  @@map("invoice_status")
+}
+
+enum Frequency {
+  WEEKLY
+  MONTHLY
+  YEARLY
+
+  @@map("frequency")
+}
+
+enum BusinessDayAdjustment {
+  KEEP
+  ADVANCE
+  POSTPONE
+
+  @@map("business_day_adjustment")
+}
+
+enum PlanKind {
+  INSTALLMENT
+  RECURRING
+  SALARY
+
+  @@map("plan_kind")
+}
+
+enum ImportFormat {
+  OFX
+  CSV
+
+  @@map("import_format")
+}
+
+enum KeyStrategy {
+  FITID
+  OCCURRENCE_HASH
+
+  @@map("key_strategy")
+}
+
+enum StatementLineStatus {
+  PENDING
+  RECONCILED
+  IGNORED
+  MISSING
+
+  @@map("statement_line_status")
+}
+
+enum RuleCondition {
+  CONTAINS
+  STARTS_WITH
+  EQUALS
+
+  @@map("rule_condition")
+}
+
+enum ChangeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELED
+
+  @@map("change_request_status")
+}
+
+enum AuditOrigin {
+  USER
+  SYSTEM
+  IMPORT
+
+  @@map("audit_origin")
+}
+
+// ===== Users, space and participants =====
+
+/// One row per login. `id` is the same uuid as auth.users.id (FK created in SQL).
+model Profile {
+  id        String   @id @db.Uuid
+  name      String
+  locale    String   @default("pt-BR")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  members                Member[]
+  participants           Participant[]
+  invitationsSent        Invitation[]
+  viewSharesGiven        ViewShare[]           @relation("ViewShareFrom")
+  viewSharesReceived     ViewShare[]           @relation("ViewShareTo")
+  installmentPlans       InstallmentPlan[]
+  bills                  Bill[]
+  settlements            Settlement[]
+  reconciliations        Reconciliation[]
+  accountMovements       AccountMovement[]
+  statementImports       StatementImport[]
+  changeRequestsMade     ChangeRequest[]       @relation("ChangeRequestRequester")
+  changeRequestsResolved ChangeRequest[]       @relation("ChangeRequestResolver")
+  descriptionNicknames   DescriptionNickname[]
+  notifications          Notification[]
+  auditLogs              AuditLog[]
+
+  @@map("profile")
+}
+
+/// The "house". Every business table carries `space_id` and every query filters by it.
+model Space {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name          String
+  closingDay    Int      @default(5) @map("closing_day")
+  notifyByEmail Boolean  @default(true) @map("notify_by_email")
+  /// IANA name (America/Cuiaba). Decides what "today" means for this space.
+  timezone      String   @default("America/Sao_Paulo")
+  /// ISO 4217 code. One currency per space; locked once the space has bills or movements.
+  currency      String   @default("BRL") @db.Char(3)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  members              Member[]
+  participants         Participant[]
+  invitations          Invitation[]
+  viewShares           ViewShare[]
+  accounts             Account[]
+  categories           Category[]
+  costCenters          CostCenter[]
+  cardInvoices         CardInvoice[]
+  installmentPlans     InstallmentPlan[]
+  bills                Bill[]
+  settlements          Settlement[]
+  reconciliations      Reconciliation[]
+  accountMovements     AccountMovement[]
+  statementImports     StatementImport[]
+  statementLines       StatementLine[]
+  categorizationRules  CategorizationRule[]
+  suggestionHistories  SuggestionHistory[]
+  descriptionNicknames DescriptionNickname[]
+  changeRequests       ChangeRequest[]
+  notifications        Notification[]
+  auditLogs            AuditLog[]
+
+  @@map("space")
+}
+
+model Member {
+  id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId   String     @map("space_id") @db.Uuid
+  userId    String     @map("user_id") @db.Uuid
+  role      MemberRole
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  space Space   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  user  Profile @relation(fields: [userId], references: [id])
+
+  @@unique([spaceId, userId])
+  @@map("member")
+}
+
+/// Who spends money, with or without a login (for example a child).
+model Participant {
+  id      String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId String  @map("space_id") @db.Uuid
+  name    String
+  userId  String? @map("user_id") @db.Uuid
+  active  Boolean @default(true)
+
+  space Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  user  Profile? @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  invitations         Invitation[]
+  heldAccounts        Account[]
+  physicalCards       PhysicalCard[]
+  billsBought         Bill[]
+  billSplits          BillSplit[]
+  categorizationRules CategorizationRule[]
+  suggestionHistories SuggestionHistory[]
+
+  @@unique([spaceId, userId])
+  @@map("participant")
+}
+
+model Invitation {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId       String           @map("space_id") @db.Uuid
+  email         String
+  role          MemberRole
+  participantId String?          @map("participant_id") @db.Uuid
+  code          String           @unique
+  status        InvitationStatus @default(PENDING)
+  invitedById   String           @map("invited_by_id") @db.Uuid
+  expiresAt     DateTime         @map("expires_at") @db.Timestamptz(6)
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  space       Space        @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  participant Participant? @relation(fields: [participantId], references: [id], onDelete: Restrict)
+  invitedBy   Profile      @relation(fields: [invitedById], references: [id])
+
+  @@map("invitation")
+}
+
+/// `fromUser` lets `toUser` see all of their bills. Only `fromUser` can grant or revoke it.
+model ViewShare {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId    String   @map("space_id") @db.Uuid
+  fromUserId String   @map("from_user_id") @db.Uuid
+  toUserId   String   @map("to_user_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  space    Space   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  fromUser Profile @relation("ViewShareFrom", fields: [fromUserId], references: [id])
+  toUser   Profile @relation("ViewShareTo", fields: [toUserId], references: [id])
+
+  @@unique([spaceId, fromUserId, toUserId])
+  @@map("view_share")
+}
+
+// ===== Registers =====
+
+model Account {
+  id          String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId     String      @map("space_id") @db.Uuid
+  name        String
+  type        AccountType
+  institution String?
+  /// Null means a joint account.
+  holderId    String?     @map("holder_id") @db.Uuid
+  /// Minor units of the space currency. Only account movements change it.
+  balance     BigInt      @default(0)
+  creditLimit BigInt?     @map("credit_limit")
+  closingDay  Int?        @map("closing_day")
+  dueDay      Int?        @map("due_day")
+  color       String?
+  icon        String?
+  active      Boolean     @default(true)
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  space  Space        @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  holder Participant? @relation(fields: [holderId], references: [id], onDelete: Restrict)
+
+  physicalCards       PhysicalCard[]
+  cardInvoices        CardInvoice[]
+  expectedForPlans    InstallmentPlan[]
+  expectedForBills    Bill[]
+  movements           AccountMovement[]
+  reconciliations     Reconciliation[]
+  statementImports    StatementImport[]
+  statementLines      StatementLine[]
+  categorizationRules CategorizationRule[]
+
+  @@map("account")
+}
+
+model PhysicalCard {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  accountId     String           @map("account_id") @db.Uuid
+  participantId String           @map("participant_id") @db.Uuid
+  lastDigits    String           @map("last_digits") @db.Char(4)
+  nickname      String?
+  type          PhysicalCardType
+  active        Boolean          @default(true)
+
+  account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  participant Participant @relation(fields: [participantId], references: [id])
+
+  movements AccountMovement[]
+
+  @@map("physical_card")
+}
+
+model Category {
+  id         String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId    String          @map("space_id") @db.Uuid
+  name       String
+  kind       CategoryKind
+  /// At most two levels.
+  parentId   String?         @map("parent_id") @db.Uuid
+  /// Set for categories created by the system; their name comes from the translation catalog.
+  systemType SystemCategory? @map("system_type")
+  color      String?
+  icon       String?
+  archived   Boolean         @default(false)
+
+  space    Space      @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children Category[] @relation("CategoryTree")
+
+  bills               Bill[]
+  categorizationRules CategorizationRule[]
+  suggestionHistories SuggestionHistory[]
+
+  @@map("category")
+}
+
+model CostCenter {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId     String    @map("space_id") @db.Uuid
+  name        String
+  description String?
+  startDate   DateTime? @map("start_date") @db.Date
+  endDate     DateTime? @map("end_date") @db.Date
+  active      Boolean   @default(true)
+
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  bills               Bill[]
+  categorizationRules CategorizationRule[]
+
+  @@map("cost_center")
+}
+
+// ===== Card invoice and installment plan (installments, recurrence, salary) =====
+
+model CardInvoice {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId         String        @map("space_id") @db.Uuid
+  accountId       String        @map("account_id") @db.Uuid
+  /// YYYY-MM
+  referenceMonth  String        @map("reference_month") @db.Char(7)
+  closingDate     DateTime      @map("closing_date") @db.Date
+  dueDate         DateTime      @map("due_date") @db.Date
+  previousBalance BigInt        @default(0) @map("previous_balance")
+  /// Realized: imported or entered purchases and every installment.
+  totalAmount     BigInt        @default(0) @map("total_amount")
+  /// Expected: recurring charges that have not shown up in the imported invoice yet.
+  expectedAmount  BigInt        @default(0) @map("expected_amount")
+  paidAmount      BigInt        @default(0) @map("paid_amount")
+  status          InvoiceStatus
+
+  space   Space   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  account Account @relation(fields: [accountId], references: [id])
+
+  bills     Bill[]
+  movements AccountMovement[]
+
+  @@unique([accountId, referenceMonth])
+  @@map("card_invoice")
+}
+
+/// A group of bills created together: an installment purchase, a recurring bill or a salary.
+/// A recurrence is an installment plan that repeats: the user gives the number of times and the
+/// whole list of bills is generated at registration. There is no daily generation job.
+model InstallmentPlan {
+  id                    String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId               String                @map("space_id") @db.Uuid
+  kind                  PlanKind              @default(INSTALLMENT)
+  description           String
+  normalizedDescription String                @map("normalized_description")
+  /// Applies to every installment, including future ones.
+  nickname              String?
+  /// Sum of every installment. For a recurring plan it is the amount times the count.
+  totalAmount           BigInt                @map("total_amount")
+  /// Number of installments, or the number of repetitions of a recurring plan (at most 120).
+  installmentCount      Int                   @map("installment_count")
+  initialInstallment    Int                   @default(1) @map("initial_installment")
+  /// Purchase date of an installment plan; first occurrence date of a recurring plan or salary.
+  purchaseDate          DateTime              @map("purchase_date") @db.Date
+  frequency             Frequency             @default(MONTHLY)
+  interval              Int                   @default(1)
+  /// Day of the month the installments fall due. Day 31 becomes the last day of the month.
+  dueDay                Int?                  @map("due_day")
+  businessDayAdjustment BusinessDayAdjustment @default(KEEP) @map("business_day_adjustment")
+  expectedAccountId     String?               @map("expected_account_id") @db.Uuid
+  createdById           String                @map("created_by_id") @db.Uuid
+  createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  deletedAt             DateTime?             @map("deleted_at") @db.Timestamptz(6)
+
+  space           Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  expectedAccount Account? @relation(fields: [expectedAccountId], references: [id], onDelete: Restrict)
+  createdBy       Profile  @relation(fields: [createdById], references: [id])
+
+  bills Bill[]
+
+  @@index([spaceId, normalizedDescription])
+  @@map("installment_plan")
+}
+
+// ===== Bill, split, settlement =====
+
+/// A payable or receivable. One table for both, told apart by `nature`.
+model Bill {
+  id                    String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId               String     @map("space_id") @db.Uuid
+  nature                Nature
+  /// As imported or typed; never changed afterwards.
+  originalDescription   String     @map("original_description")
+  /// Uppercase, no accents, no installment suffix. Joins the bill to its supplier nickname.
+  normalizedDescription String     @map("normalized_description")
+  nickname              String?
+  originalAmount        BigInt     @map("original_amount")
+  /// Estimated value, for example an electricity bill.
+  expectedAmount        BigInt?    @map("expected_amount")
+  estimated             Boolean    @default(false)
+  balance               BigInt
+  totalDiscount         BigInt     @default(0) @map("total_discount")
+  status                BillStatus @default(OPEN)
+  accrualDate           DateTime   @map("accrual_date") @db.Date
+  dueDate               DateTime   @map("due_date") @db.Date
+  categoryId            String?    @map("category_id") @db.Uuid
+  costCenterId          String?    @map("cost_center_id") @db.Uuid
+  /// The person who bought it (the one answerable for the bill).
+  buyerId               String     @map("buyer_id") @db.Uuid
+  splitMode             SplitMode? @map("split_mode")
+  expectedAccountId     String?    @map("expected_account_id") @db.Uuid
+  cardInvoiceId         String?    @map("card_invoice_id") @db.Uuid
+  installmentPlanId     String?    @map("installment_plan_id") @db.Uuid
+  installmentNumber     Int?       @map("installment_number")
+  manuallyEdited        Boolean    @default(false) @map("manually_edited")
+  notes                 String?
+  createdById           String     @map("created_by_id") @db.Uuid
+  createdAt             DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt             DateTime?  @map("deleted_at") @db.Timestamptz(6)
+
+  space           Space            @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  category        Category?        @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  costCenter      CostCenter?      @relation(fields: [costCenterId], references: [id], onDelete: Restrict)
+  buyer           Participant      @relation(fields: [buyerId], references: [id])
+  expectedAccount Account?         @relation(fields: [expectedAccountId], references: [id], onDelete: Restrict)
+  cardInvoice     CardInvoice?     @relation(fields: [cardInvoiceId], references: [id], onDelete: Restrict)
+  installmentPlan InstallmentPlan? @relation(fields: [installmentPlanId], references: [id], onDelete: Restrict)
+  createdBy       Profile          @relation(fields: [createdById], references: [id])
+
+  splits         BillSplit[]
+  settlements    Settlement[]
+  changeRequests ChangeRequest[]
+
+  @@unique([installmentPlanId, installmentNumber])
+  @@index([spaceId, dueDate])
+  @@index([spaceId, normalizedDescription])
+  @@index([cardInvoiceId])
+  @@map("bill")
+}
+
+/// Who consumed the bill. No rows means 100% for the buyer.
+model BillSplit {
+  id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  billId        String  @map("bill_id") @db.Uuid
+  participantId String  @map("participant_id") @db.Uuid
+  amount        BigInt
+  percentage    Decimal @db.Decimal(7, 4)
+
+  bill        Bill        @relation(fields: [billId], references: [id], onDelete: Cascade)
+  participant Participant @relation(fields: [participantId], references: [id])
+
+  @@unique([billId, participantId])
+  @@map("bill_split")
+}
+
+model Settlement {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId         String           @map("space_id") @db.Uuid
+  billId          String           @map("bill_id") @db.Uuid
+  reason          SettlementReason
+  date            DateTime         @db.Date
+  amortizedAmount BigInt           @map("amortized_amount")
+  interest        BigInt           @default(0)
+  penalty         BigInt           @default(0)
+  discount        BigInt           @default(0)
+  /// amortizedAmount + interest + penalty - discount
+  movedAmount     BigInt           @map("moved_amount")
+  notes           String?
+  createdById     String           @map("created_by_id") @db.Uuid
+  reversedAt      DateTime?        @map("reversed_at") @db.Timestamptz(6)
+  reversalReason  String?          @map("reversal_reason")
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  space     Space   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  bill      Bill    @relation(fields: [billId], references: [id])
+  createdBy Profile @relation(fields: [createdById], references: [id])
+
+  movement AccountMovement?
+
+  @@map("settlement")
+}
+
+// ===== Account movement and reconciliation =====
+
+model Reconciliation {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId        String   @map("space_id") @db.Uuid
+  accountId      String   @map("account_id") @db.Uuid
+  reconciledById String   @map("reconciled_by_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  space        Space   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  account      Account @relation(fields: [accountId], references: [id])
+  reconciledBy Profile @relation(fields: [reconciledById], references: [id])
+
+  movements      AccountMovement[]
+  statementLines StatementLine[]
+
+  @@map("reconciliation")
+}
+
+/// The account statement kept by the system, and the only thing that changes a balance.
+model AccountMovement {
+  id                 String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId            String         @map("space_id") @db.Uuid
+  accountId          String         @map("account_id") @db.Uuid
+  date               DateTime       @db.Date
+  direction          Direction
+  amount             BigInt
+  origin             MovementOrigin
+  settlementId       String?        @unique @map("settlement_id") @db.Uuid
+  /// Both legs of a transfer share this id.
+  transferId         String?        @map("transfer_id") @db.Uuid
+  reversedMovementId String?        @map("reversed_movement_id") @db.Uuid
+  cardInvoiceId      String?        @map("card_invoice_id") @db.Uuid
+  physicalCardId     String?        @map("physical_card_id") @db.Uuid
+  reconciliationId   String?        @map("reconciliation_id") @db.Uuid
+  description        String
+  createdById        String         @map("created_by_id") @db.Uuid
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  space            Space             @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  account          Account           @relation(fields: [accountId], references: [id])
+  settlement       Settlement?       @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  reversedMovement AccountMovement?  @relation("MovementReversal", fields: [reversedMovementId], references: [id], onDelete: Restrict)
+  reversals        AccountMovement[] @relation("MovementReversal")
+  cardInvoice      CardInvoice?      @relation(fields: [cardInvoiceId], references: [id], onDelete: Restrict)
+  physicalCard     PhysicalCard?     @relation(fields: [physicalCardId], references: [id], onDelete: Restrict)
+  reconciliation   Reconciliation?   @relation(fields: [reconciliationId], references: [id], onDelete: Restrict)
+  createdBy        Profile           @relation(fields: [createdById], references: [id])
+
+  @@index([accountId, date])
+  @@map("account_movement")
+}
+
+// ===== Statement import =====
+
+model ImportLayout {
+  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bank               String
+  format             ImportFormat
+  keyStrategy        KeyStrategy  @map("key_strategy")
+  mapping            Json
+  installmentPattern String?      @map("installment_pattern")
+
+  statementImports StatementImport[]
+
+  @@map("import_layout")
+}
+
+model StatementImport {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId         String       @map("space_id") @db.Uuid
+  accountId       String       @map("account_id") @db.Uuid
+  layoutId        String?      @map("layout_id") @db.Uuid
+  format          ImportFormat
+  fileName        String       @map("file_name")
+  fileHash        String       @map("file_hash")
+  periodStart     DateTime     @map("period_start") @db.Date
+  periodEnd       DateTime     @map("period_end") @db.Date
+  reportedBalance BigInt?      @map("reported_balance")
+  reportedLimit   BigInt?      @map("reported_limit")
+  importedById    String       @map("imported_by_id") @db.Uuid
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  space      Space         @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  account    Account       @relation(fields: [accountId], references: [id])
+  layout     ImportLayout? @relation(fields: [layoutId], references: [id], onDelete: Restrict)
+  importedBy Profile       @relation(fields: [importedById], references: [id])
+
+  lines         StatementLine[] @relation("LineImport")
+  lastSeenLines StatementLine[] @relation("LineLastImport")
+
+  @@map("statement_import")
+}
+
+/// Imported lines are immutable; only status and reconciliation change.
+model StatementLine {
+  id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId               String              @map("space_id") @db.Uuid
+  accountId             String              @map("account_id") @db.Uuid
+  importId              String              @map("import_id") @db.Uuid
+  lastImportId          String              @map("last_import_id") @db.Uuid
+  externalId            String              @map("external_id")
+  date                  DateTime            @db.Date
+  direction             Direction
+  amount                BigInt
+  description           String
+  normalizedDescription String              @map("normalized_description")
+  cardLastDigits        String?             @map("card_last_digits") @db.Char(4)
+  status                StatementLineStatus @default(PENDING)
+  reconciliationId      String?             @map("reconciliation_id") @db.Uuid
+
+  space          Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  account        Account         @relation(fields: [accountId], references: [id])
+  import         StatementImport @relation("LineImport", fields: [importId], references: [id])
+  lastImport     StatementImport @relation("LineLastImport", fields: [lastImportId], references: [id])
+  reconciliation Reconciliation? @relation(fields: [reconciliationId], references: [id], onDelete: Restrict)
+
+  @@unique([accountId, externalId])
+  @@map("statement_line")
+}
+
+// ===== Suggestions =====
+
+model CategorizationRule {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId      String        @map("space_id") @db.Uuid
+  accountId    String?       @map("account_id") @db.Uuid
+  condition    RuleCondition
+  text         String
+  direction    Direction?
+  minAmount    BigInt?       @map("min_amount")
+  maxAmount    BigInt?       @map("max_amount")
+  categoryId   String        @map("category_id") @db.Uuid
+  costCenterId String?       @map("cost_center_id") @db.Uuid
+  buyerId      String?       @map("buyer_id") @db.Uuid
+  priority     Int           @default(100)
+  active       Boolean       @default(true)
+  timesApplied Int           @default(0) @map("times_applied")
+
+  space      Space        @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  account    Account?     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  category   Category     @relation(fields: [categoryId], references: [id])
+  costCenter CostCenter?  @relation(fields: [costCenterId], references: [id], onDelete: Restrict)
+  buyer      Participant? @relation(fields: [buyerId], references: [id], onDelete: Restrict)
+
+  @@map("categorization_rule")
+}
+
+/// What the space confirmed last time for a normalized description.
+model SuggestionHistory {
+  spaceId               String     @map("space_id") @db.Uuid
+  normalizedDescription String     @map("normalized_description")
+  categoryId            String?    @map("category_id") @db.Uuid
+  buyerId               String?    @map("buyer_id") @db.Uuid
+  splitMode             SplitMode? @map("split_mode")
+  /// Percentages only.
+  split                 Json?
+  count                 Int        @default(1)
+  lastUsedAt            DateTime   @default(now()) @map("last_used_at") @db.Timestamptz(6)
+
+  space    Space        @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  category Category?    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  buyer    Participant? @relation(fields: [buyerId], references: [id], onDelete: Restrict)
+
+  @@id([spaceId, normalizedDescription])
+  @@map("suggestion_history")
+}
+
+/// Supplier nickname: normalized description -> nickname, applied to past and future bills.
+model DescriptionNickname {
+  spaceId               String   @map("space_id") @db.Uuid
+  normalizedDescription String   @map("normalized_description")
+  nickname              String
+  createdById           String   @map("created_by_id") @db.Uuid
+  updatedAt             DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  space     Space   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  createdBy Profile @relation(fields: [createdById], references: [id])
+
+  @@id([spaceId, normalizedDescription])
+  @@map("description_nickname")
+}
+
+// ===== Collaboration and audit =====
+
+model ChangeRequest {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId        String              @map("space_id") @db.Uuid
+  billId         String              @map("bill_id") @db.Uuid
+  requesterId    String              @map("requester_id") @db.Uuid
+  proposedChange Json                @map("proposed_change")
+  message        String?
+  status         ChangeRequestStatus @default(PENDING)
+  resolvedById   String?             @map("resolved_by_id") @db.Uuid
+  resolvedAt     DateTime?           @map("resolved_at") @db.Timestamptz(6)
+  response       String?
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  space      Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  bill       Bill     @relation(fields: [billId], references: [id])
+  requester  Profile  @relation("ChangeRequestRequester", fields: [requesterId], references: [id])
+  resolvedBy Profile? @relation("ChangeRequestResolver", fields: [resolvedById], references: [id], onDelete: Restrict)
+
+  @@map("change_request")
+}
+
+/// Stores the type and its data, never the final text: the text is built in the reader's language.
+model Notification {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId   String    @map("space_id") @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  type      String
+  reference String?   @db.Uuid
+  params    Json      @default("{}")
+  readAt    DateTime? @map("read_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  space Space   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  user  Profile @relation(fields: [userId], references: [id])
+
+  @@map("notification")
+}
+
+/// Insert only (UPDATE and DELETE are revoked in SQL). One row per operation.
+model AuditLog {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spaceId       String      @map("space_id") @db.Uuid
+  entity        String
+  entityId      String      @map("entity_id") @db.Uuid
+  action        String
+  /// { field: { from, to } }
+  changes       Json
+  userId        String?     @map("user_id") @db.Uuid
+  origin        AuditOrigin
+  /// Groups the rows written by one action.
+  correlationId String      @map("correlation_id") @db.Uuid
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  space Space    @relation(fields: [spaceId], references: [id])
+  user  Profile? @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([entity, entityId])
+  @@index([correlationId])
+  @@map("audit_log")
+}
