@@ -19,6 +19,21 @@ Regras que valem para todo o código do Peculium. Ponto de partida: [decisões e
 | 11 | Tradução | `pt-BR` e `en`, catálogos em `shared/locales`, erro traduzido por `Accept-Language` |
 | 12 | Moeda | Uma moeda por espaço (`space.currency`), valores em `bigint` na unidade menor da moeda, sem câmbio |
 | 13 | Commits | Padrão do Meu Vestir (tipo, escopo, emoji) com o assunto em inglês e português |
+| 14 | Recorrência | É um parcelamento com repetição: quantidade obrigatória e lista completa gerada no cadastro. Sem agendador. Tabela única `installment_plan` com `kind`. |
+| 15 | Backend dormindo | Render gratuito dorme; o front trata a primeira resposta lenta |
+| 16 | Sistema de design | Índigo como única cor de destaque, neutros azul-marinho sem branco nem preto puros, OKLCH dentro do sRGB, Inter, cantos de 8 px. Atrasado e negativo em vermelho, a pagar em laranja escuro, a receber em azul-céu, resultado positivo em verde. Ver [sistema de design](design-system.md) |
+| 17 | Autenticação | Supabase Auth; a API valida o JWT e relê papel e permissões do banco a cada requisição |
+| 18 | Monorepo | pnpm 11 + Turborepo, como no `controle-financeiro` |
+| 19 | Lint e formatação | Biome (lint e formatação em uma ferramenta só) |
+| 20 | Camadas da API | `routes` → `controller` → `service` → `repository`, sempre |
+| 21 | Mobile first | Mobile first, responsivo e acessível (WCAG 2.2 AA), com teste automático de acessibilidade |
+| 22 | Hospedagem do backend | Render gratuito para começar (dorme após 15 minutos parado), plano pago quando houver uso real |
+| 23 | E-mail | Resend (plano gratuito: 100 por dia e 3.000 por mês), para convites, avisos e SMTP do Supabase Auth |
+| 24 | Validação nas rotas | `fastify-type-provider-zod`, como no `controle-financeiro` |
+| 25 | Hospedagem do front | Cloudflare Pages |
+| 26 | Leitura de OFX | Parser próprio pequeno, atrás de um adaptador, testado com arquivos reais |
+| 27 | Integração contínua | GitHub Actions, com PostgreSQL em serviço para os testes de integração |
+| 28 | Licença | Nenhuma: todos os direitos reservados |
 
 ## 1. Idioma
 
@@ -52,7 +67,7 @@ Glossário revisado e aprovado. Os nomes do SQL do documento de decisões serão
 | extrato | `statement` | `statement_import`, `statement_line` |
 | conciliação | `reconciliation` | |
 | parcelamento / parcela | `installment_plan` / `installment` | |
-| recorrência | `recurrence_rule` | |
+| recorrência | `installment_plan` com `kind = RECURRING` | Parcelamento com repetição; gera a lista completa ao cadastrar. Salário é `kind = SALARY`. |
 | rateio | `split` | `bill_split` |
 | acerto entre participantes | `reimbursement` | Título a receber gerado no relatório |
 | apelido | `nickname` | `description_nickname` guarda o apelido por descrição |
@@ -68,7 +83,7 @@ Glossário revisado e aprovado. Os nomes do SQL do documento de decisões serão
 
 ## 2. Estrutura do repositório
 
-Monorepo com npm workspaces, no mesmo formato do Meu Vestir, com três pacotes.
+Monorepo com **pnpm 11 e Turborepo**, no mesmo formato do `controle-financeiro`, com três pacotes (decisão tomada). Requer Node 22 ou mais novo. Comandos da raiz: `pnpm dev`, `build`, `lint`, `typecheck`, `test` e `format`, todos delegados ao Turborepo, que guarda cache entre pacotes. A versão do pnpm fica fixada em `packageManager` no `package.json`.
 
 ```
 peculium/
@@ -88,7 +103,15 @@ peculium/
 - Conexão pelo **session pooler do Supabase (porta 5432)** em `DATABASE_URL`, que serve ao servidor Fastify e às migrations. Sem `DIRECT_URL` e sem `?pgbouncer=true`, que são para ambientes serverless.
 - Usuário **`prisma` dedicado** no banco, com permissões no schema `public`. Esse usuário ignora o RLS, então as regras de visão ficam no backend.
 - **Data API (PostgREST) do Supabase desligada**, já que só o backend acessa o banco.
-- O que o Prisma não gera fica em **migrations SQL**: `check` de valores, trava da auditoria, FK de `profile` para `auth.users`, função `is_member`, políticas RLS e views.
+- O que o Prisma não gera fica em **migrations SQL** escritas à mão, ao lado da migration gerada: `check` de valores, gatilhos (fuso válido, moeda travada, categoria em dois níveis), trava da auditoria, FK de `profile` para `auth.users` (só onde existe o schema `auth`), RLS ligado e a view `bill_display`.
+- `backend/prisma/checks/constraints.sql` verifica essas regras num banco vazio e imprime PASS ou FAIL. Roda em PostgreSQL comum e em um que imita o Supabase.
+
+### Serviços externos
+
+- **Backend:** Render, no plano gratuito para começar. O servidor dorme após 15 minutos parado e a primeira resposta leva cerca de 1 minuto; o front trata isso (seção 8). Passa para o plano pago quando houver uso real, sem mudar código.
+- **Front:** Cloudflare Pages, plano gratuito, sem restrição de uso comercial. Cada push gera uma prévia.
+- **E-mail:** Resend, no plano gratuito (100 por dia e 3.000 por mês, sem cobrança extra: ao bater o limite o envio pausa). Envia convites e avisos do backend e serve de SMTP ao Supabase Auth. Exige domínio próprio verificado para enviar de verdade. Os limites do plano podem mudar; conferir antes de depender deles.
+- **Acesso por adaptador:** Supabase Auth, Resend e qualquer serviço novo ficam atrás de uma interface do projeto (padrão Adapter, seção 11), para trocar e testar sem rede.
 
 ## 3. Nomenclatura
 
@@ -130,7 +153,7 @@ peculium/
 - Rateio em reais: a diferença de arredondamento fica no responsável (e na primeira parcela, no parcelamento), como definido no documento de decisões.
 - **Instantes** (`created_at`, `reversed_at`) são gravados em UTC e trafegam em ISO 8601 UTC. A interface converte para o horário local de quem está vendo, usando `date-fns` e `date-fns-tz`.
 - **Datas sem hora** (`due_date`, `accrual_date`, `date` da baixa) trafegam como texto `YYYY-MM-DD` e **nunca são convertidas de fuso**. Converter uma data pura como se fosse um instante desloca o dia.
-- **"Hoje" no servidor** (atraso, geração diária de recorrência, dia de fechamento) usa o **fuso do espaço**, na coluna `space.timezone`, com o nome IANA (`America/Cuiaba`, `Europe/Lisbon`). O servidor roda em UTC, então sem esse fuso um título que vence hoje apareceria atrasado à noite, e uma família em outro país teria o "hoje" calculado no horário errado.
+- **"Hoje" no servidor** (atraso, dia de fechamento, datas das ocorrências geradas) usa o **fuso do espaço**, na coluna `space.timezone`, com o nome IANA (`America/Cuiaba`, `Europe/Lisbon`). O servidor roda em UTC, então sem esse fuso um título que vence hoje apareceria atrasado à noite, e uma família em outro país teria o "hoje" calculado no horário errado.
   - A coluna nasce preenchida com o fuso do navegador de quem cria o espaço e pode ser alterada nas configurações, só pelo dono.
   - O valor é validado contra a lista de nomes IANA. Nunca se guarda deslocamento fixo (`-04:00`), porque ele não acompanha horário de verão.
   - Toda regra que depende do dia (atraso, recorrência, fechamento) recebe o fuso do espaço por parâmetro, nunca lê um fuso global.
@@ -142,11 +165,15 @@ peculium/
 ### Camadas
 
 ```
-rota (Fastify) -> validação Zod -> service -> acesso a dados (Prisma)
+routes -> controller -> service -> repository
 ```
 
-- **Rotas** só validam entrada, chamam um service e formatam a resposta. Sem regra de negócio.
+Mesmas camadas do `controle-financeiro` (decisão tomada).
+
+- **Routes** declaram o endpoint e validam entrada e saída com os schemas Zod de `shared`. Sem regra de negócio.
+- **Controllers** traduzem HTTP: leem a requisição, chamam um service e montam a resposta e o código de status. O service não conhece HTTP.
 - **Services** concentram a regra de negócio e recebem o cliente transacional, nunca o cliente global.
+- **Repositories** são os únicos que conhecem o Prisma. Toda consulta e gravação passa por eles, o que deixa o service testável sem banco.
 - **Regras puras** (cálculo de saldo, rateio, recorrência, sugestão) viram funções sem acesso a banco, para testar sem infraestrutura.
 
 ### Operações e auditoria
@@ -162,9 +189,16 @@ rota (Fastify) -> validação Zod -> service -> acesso a dados (Prisma)
 - Papel define o que a pessoa pode fazer; privacidade define o que ela vê. As duas checagens são independentes e ficam em módulos separados.
 - Consulta que lista ou busca dados passa pelo filtro de visibilidade. Ninguém edita o que não vê.
 
+### Importação de extrato
+
+- **OFX:** parser próprio e pequeno, atrás de um adaptador (`StatementReader`), que lê a versão 1 (SGML) e a 2 (XML). Fica coberto por testes com **arquivos reais de bancos, anonimizados**, porque as variações entre bancos é onde um parser quebra. Biblioteca de npm não foi adotada por estar pouco mantida.
+- **CSV:** layouts por banco, partindo do que o `controle-financeiro` já tem em `Docs/importacao-csv.md`.
+- Os dois formatos entregam as mesmas `statement_line` ao resto do sistema, e o layout escolhe a chave de idempotência (`FITID` ou hash da ocorrência).
+
 ### Validação e erros
 
-- Entrada e saída validadas com Zod, usando os schemas de `shared`.
+- Entrada e saída validadas com Zod, usando os schemas de `shared`, ligados às rotas pelo `fastify-type-provider-zod` (como no `controle-financeiro`). A versão do provider acompanha a do Zod; conferir a compatibilidade ao instalar.
+- O código da API é organizado por funcionalidade: `modules/<funcionalidade>/` com `routes`, `controller`, `service` e `repository` lado a lado (por exemplo `modules/bills/`).
 - Erros de negócio usam classes próprias (`BusinessError`, `NotFoundError`, `PermissionError`) com código estável. Um handler único converte em resposta HTTP.
 - Formato de erro da API:
 
@@ -203,7 +237,57 @@ frontend/src/
 - **shadcn/ui** para componentes prontos (botão, diálogo, tabela, formulário, seletor de data). Os componentes são copiados para `shared/ui` pelo CLI e passam a ser código do projeto, então podem ser ajustados. Antes de criar um componente de interface, verificar se o shadcn/ui já tem.
 - **Phosphor Icons** (`@phosphor-icons/react`) para todos os ícones sempre que houver equivalente. Ao adicionar um componente do shadcn/ui, trocar os ícones que vêm de outra biblioteca pelo equivalente Phosphor. Um peso (`regular`, `bold`, `fill`) por contexto, definido em um único lugar.
 - Classes condicionais com `cn()` (o utilitário que o shadcn/ui instala). Valores repetidos de design (cores, espaçamento, raio) vêm dos tokens do Tailwind, nunca de valores soltos.
+- **O backend pode estar dormindo.** O plano gratuito do Render adormece o servidor após 15 minutos parado, e a primeira resposta pode levar cerca de 1 minuto. O front está preparado para isso:
+  - Ao abrir o app, dispara uma chamada leve de aquecimento (`GET /health`) antes de qualquer outra.
+  - Primeira chamada com limite de tempo de pelo menos 60 segundos e nova tentativa automática com espera crescente.
+  - Mostra um estado de carregamento próprio ("acordando o servidor"), nunca uma tela de erro por lentidão.
+  - Só trata como falha de verdade depois de esgotar as tentativas, e então oferece "tentar de novo".
 - Nenhuma regra de negócio no front: ele exibe e envia. Cálculos que o servidor já faz não são refeitos na tela.
+
+### Mobile first, responsivo e acessível
+
+Valem para toda tela nova (decisão tomada; parte vem do `controle-financeiro`).
+
+**Mobile first**
+
+- O CSS parte da largura de celular. Os breakpoints do Tailwind (`sm:`, `md:`, `lg:`) só **acrescentam**; nunca desfazem um layout de desktop escrito antes.
+- **`flex` por padrão**, com `gap` em vez de margens soltas. `grid` só quando linhas **e** colunas precisam se alinhar entre si (tabela de fatura no desktop, formulário de duas colunas).
+- Nada de `float`, de `position: absolute` para posicionar conteúdo de fluxo nem de largura fixa em pixel.
+- **Navegação:** barra inferior no celular e lateral a partir de `md:`.
+- **Listas:** viram cartões abaixo de `md:` e tabela a partir dele (`DataList`).
+- **Painéis:** sobem de baixo no celular (sheet) e viram diálogo no desktop (`Panel`).
+- **Alvo de toque de no mínimo 44 px**, inclusive nos botões pequenos, que são compactos na aparência e não no alvo.
+- **Campo de texto com no mínimo 16 px**, para o iOS não dar zoom ao focar.
+- **Altura da janela com `dvh`** e margem segura do iPhone (`env(safe-area-inset-bottom)`) na barra inferior.
+- **Todo elemento clicável tem estado de hover no computador**, sem exceção: botões, links, linhas e cartões clicáveis, itens de menu, abas e ícones de ação. O hover muda fundo, borda ou sublinhado de forma perceptível, com transição curta, e vem sempre junto de `cursor: pointer`, foco visível e estado de clique (`active`). A variante `hover:` do Tailwind v4 só vale em aparelhos que suportam hover (confirmar na versão instalada), então o toque no celular não deixa um hover preso.
+- **Nenhuma função depende de hover.** O hover é só retorno visual: tudo que aparece ao passar o mouse também aparece ao tocar ou focar.
+
+**Responsivo**
+
+- Sem rolagem horizontal a partir de 320 px de largura, e o conteúdo continua utilizável com zoom de 200%.
+- Larguras de referência para teste: 320, 375, 768, 1024 e 1440 px.
+- Tabelas largas viram cartões no celular; só dados realmente tabulares ganham rolagem horizontal, e com indicação visível.
+- Imagens e gráficos escalam com o contêiner.
+
+**Acessível (WCAG 2.2, nível AA)**
+
+- **HTML semântico** antes de `div` com `role`: `button`, `nav`, `main`, `table`, títulos em ordem. Os componentes do shadcn/ui (Radix) já trazem a semântica e o foco corretos; não trocá-los por `div` clicável.
+- **Teclado completo:** toda ação funciona só com teclado, a ordem de tabulação segue a leitura, o foco é sempre visível e diálogos prendem o foco e devolvem ao elemento de origem.
+- **Formulários:** todo campo tem rótulo visível ligado a ele. O erro aparece junto do campo, ligado por `aria-describedby`, e é anunciado ao leitor de tela. Não depende só de cor.
+- **Cor nunca anda sozinha:** todo estado leva rótulo ou ícone e todo valor leva sinal. O leitor de tela fala o sinal e o estado ("menos R$ 340,00", "atrasado"), por isso o `Money` e o `BillStatusBadge` trazem texto oculto para leitor de tela.
+- **Contraste** de 4,5:1 no texto e 3:1 nos controles, já garantido pelo teste do tema.
+- **Ícones:** decorativos com `aria-hidden`; botão só com ícone com `aria-label` traduzido.
+- **Idioma:** o atributo `lang` do `<html>` acompanha o idioma ativo (`pt-BR` ou `en`).
+- **Movimento:** respeita `prefers-reduced-motion`.
+- **Tabelas de dados** com `th` e `scope`, e legenda quando houver mais de uma na tela.
+- **Atalhos:** link "pular para o conteúdo" no início da página.
+
+**Como se verifica**
+
+- O grupo de regras `a11y` do Biome roda no lint e falha o build.
+- Testes de componente rodam `vitest-axe` e falham com violação.
+- Os fluxos críticos do Playwright rodam `@axe-core/playwright` em projeto de celular e de desktop.
+- Antes de publicar uma tela nova: percorrer com o teclado e conferir uma vez com leitor de tela.
 
 ## 9. Testes
 
@@ -244,7 +328,9 @@ frontend/src/
   - Emojis: `✨` funcionalidade, `🐛` correção, `✅` testes, `💄` visual, `🔒️` segurança, `🔧` configuração, `📝` documentação, `♻️` refatoração, `⚡️` desempenho, `⬆️` dependências.
   - Escopo em inglês e em minúsculas, igual ao termo do glossário: `bills`, `settlements`, `accounts`, `card-invoices`, `statements`, `auth`, `i18n`, `db`.
 - Pull request pequeno, com descrição do que muda e como testar.
-- ESLint e Prettier em todos os workspaces, `tsc --noEmit` em modo estrito, e checagem automática (CI) rodando lint, tipos e testes.
+- **Biome** faz o lint e a formatação em todos os pacotes, com as mesmas preferências do `controle-financeiro`: ponto e vírgula, aspas simples, vírgula final em tudo, 100 colunas, indentação de 2 espaços e fim de linha LF. O grupo de regras `a11y` fica ligado como erro. `tsc --noEmit` em modo estrito, e checagem automática (CI) rodando lint, tipos e testes.
+- **CI no GitHub Actions** a cada push e pull request: instala com pnpm, usa o cache do Turborepo e sobe um PostgreSQL como serviço do job para os testes de integração. Falha em lint, tipos, testes ou acessibilidade impede o merge.
+- **Licença:** nenhuma. O repositório é público para portfólio, mas sem arquivo de licença ninguém pode reutilizar o código sem permissão (todos os direitos reservados). Se a decisão mudar, a licença entra como arquivo `LICENSE` na raiz.
 - Arquivos de segredo nunca vão para o git. Cada workspace tem `.env.example` com os nomes das variáveis e valores de exemplo.
 
 ## 11. Padrões de projeto e código limpo
@@ -272,7 +358,7 @@ Padrão entra quando resolve um problema que o projeto já tem, nunca "por preca
 | **Strategy** | Escolha de comportamento por contexto: chave de idempotência da importação (`FITID` ou hash), ordem de sugestão de categoria e de responsável, ajuste de dia útil da recorrência. |
 | **Factory / registro** | Layout de importação por banco e formato (OFX e CSV): um registro devolve o leitor correto. |
 | **Adapter** | Isolar serviços externos (Supabase Auth, envio de e-mail, leitores de arquivo) atrás de uma interface do projeto, para trocar e testar sem rede. |
-| **Repository** | Só onde uma consulta complexa se repete (relatórios, visibilidade). O Prisma já é a camada de acesso; não criar repositório para CRUD simples. |
+| **Repository** | Camada fixa da API (seção 6): só o repository conhece o Prisma. |
 | **Specification (filtros compostos)** | Filtro de visibilidade e filtros de relatório montados a partir de pedaços reutilizáveis. |
 
 - **Injeção de dependência por parâmetro**, sem contêiner: services recebem o cliente transacional, o relógio e os adaptadores como argumentos, o que facilita o teste.
@@ -323,7 +409,17 @@ Consequências:
 
 ## 14. Segurança
 
+### Autenticação
+
+- **Supabase Auth** (decisão tomada): cadastro, confirmação de e-mail, recuperação de senha e login ficam com o Supabase. `profile.id` é o mesmo uuid de `auth.users.id`.
+- O front usa o `supabase-js` só para autenticar e envia o **access token** no cabeçalho `Authorization: Bearer` para a API. Nenhuma outra chamada do front vai direto ao Supabase (a Data API fica desligada).
+- O backend **verifica a assinatura do JWT** a cada requisição (chaves públicas JWKS do projeto, ou o segredo JWT em projetos antigos; conferir no momento de implementar) e usa o `sub` como `profile.id`.
+- **Papel e permissões são relidos do banco a cada requisição**; o token serve só para saber quem é a pessoa. Assim, rebaixar ou remover alguém vale na hora, sem esperar o token expirar. Padrão herdado do `controle-financeiro`.
+- Guards compostos por rota, como no app anterior (`requireAuth` e variações por papel e por espaço). Rota nova nasce protegida por hook de escopo, em vez de depender de alguém repetir o `preHandler`.
+- O token fica no armazenamento do `supabase-js`, mais exposto a XSS que um cookie `httpOnly`. Compensação: CSP estrita, token de vida curta com renovação automática e nenhum HTML injetado sem sanitizar.
+- **E-mails de autenticação** (confirmação e recuperação) saem pelo SMTP configurado no Supabase; o envio padrão tem limite baixo no plano gratuito, então o SMTP próprio entra antes de ter usuários reais.
 - Chave de serviço do Supabase só no backend, nunca no front.
-- Com o acesso passando pelo backend, o RLS é ignorado, então as regras de visão ficam no código. As políticas RLS do SQL continuam como segunda barreira.
+- **RLS ligado em todas as tabelas, sem nenhuma política.** Só o backend lê e grava (a Data API do Supabase fica desligada), e o papel do backend ignora o RLS. Quem não é o backend não recebe nada: se a Data API for ligada por engano, o banco continua fechado. As regras de visão ficam no código da API.
+- Os papéis `anon` e `authenticated` do Supabase perdem os privilégios de tabela que recebem por padrão.
 - Dados financeiros e e-mails não aparecem em log. Log registra identificadores e códigos.
 - Convites usam código aleatório de uso único com expiração.

@@ -17,7 +17,7 @@ Documento de contexto com o histórico consolidado das decisões de arquitetura 
 - **Participante**: quem gasta, com ou sem login (ex.: Filho 1). Cada membro tem um participante vinculado.
 - Ao se cadastrar e confirmar o e-mail, o sistema cria um espaço com o usuário como dono e participante.
 - **Convite**: pela lista de participantes (vincula o login a um participante existente, preservando o histórico) ou pelo botão "convidar novo" (cria o participante e envia o convite).
-- Configurações do espaço: dia de fechamento (padrão 5), horizonte da recorrência (padrão 6 meses, 1 a 24), notificações por e-mail (nascem ligadas).
+- Configurações do espaço: dia de fechamento (padrão 5), fuso horário, moeda, notificações por e-mail (nascem ligadas).
 
 ## 3. Papéis e privacidade
 
@@ -142,7 +142,7 @@ O apelido funciona como **nome do fornecedor**. Ao dar um apelido, o sistema gra
 
 ## 12. Parcelamento
 
-- `GrupoParcelamento` + títulos com `numeroParcela`. Todas as parcelas criadas de uma vez.
+- `GrupoParcelamento` + títulos com `numeroParcela`. Todas as parcelas criadas de uma vez. O mesmo grupo atende a recorrência e o salário (seção 13).
 - Parcelamento de título (IPVA, carnê) e parcelamento no cartão (cada parcela em uma fatura).
 - No cartão, a parcela atual é baixada; as demais ficam abertas e realizadas para limite e fatura.
 - Importação de "LOJA 02/10" baixa a parcela existente sem nova revisão.
@@ -151,12 +151,15 @@ O apelido funciona como **nome do fornecedor**. Ao dar um apelido, o sistema gra
 
 ## 13. Recorrência e salário
 
-- `RegraRecorrencia` gera títulos previstos: frequência (mensal, semanal, anual) e intervalo; dia 31 vira último dia; ajuste de dia útil (manter, antecipar, postergar).
-- Valor variável usa o último valor pago, marcado como estimado.
-- No cartão, gera títulos **previstos** ligados às faturas futuras; a importação baixa o título e ajusta o valor real.
-- Editar a regra afeta só títulos abertos não editados manualmente; encerrar exclui os abertos futuros.
-- Geração diária até o horizonte do espaço (configurável, padrão 6 meses). Aumentar gera na hora; diminuir não apaga.
-- **Rotina de salário**: cada participante cadastra o seu (valor, dia, conta). É uma recorrência a receber marcada como SALARIO.
+A recorrência é um **parcelamento com repetição**. Ao cadastrar, o usuário informa **obrigatoriamente a quantidade de vezes** e o sistema gera **a lista completa na hora**. Não existe geração diária, agendador nem horizonte configurável.
+
+- Usa o mesmo grupo do parcelamento, com o tipo `INSTALLMENT`, `RECURRING` ou `SALARY`, frequência (semanal, mensal, anual), intervalo, dia de vencimento (dia 31 vira último dia) e ajuste de dia útil (manter, antecipar, postergar).
+- Teto de 120 ocorrências por série.
+- Valor variável: todas as ocorrências nascem com o valor estimado e marcadas como estimadas; o usuário corrige cada uma quando o valor real chega. Não há ajuste automático pelo último valor pago.
+- No cartão, gera os títulos **previstos** ligados às faturas futuras (criadas como FUTURA); a importação baixa o título e ajusta o valor real.
+- Editar a série afeta só títulos abertos não editados manualmente; encerrar exclui os abertos futuros.
+- **Estender** é uma ação manual que gera mais ocorrências a partir da última.
+- **Rotina de salário**: cada participante cadastra o seu (valor, dia, conta, quantidade de vezes). É uma série a receber do tipo `SALARY`.
 
 ## 14. Datas e navegação
 
@@ -184,6 +187,8 @@ O apelido funciona como **nome do fornecedor**. Ao dar um apelido, o sistema gra
 Removido: relatório de previsto x realizado.
 
 ## 16. Modelo de dados (SQL — Supabase/PostgreSQL)
+
+> **Histórico.** O SQL abaixo é a versão original, em português, e **não é mais mantido**. O modelo vigente, com nomes em inglês, está em [`backend/prisma/schema.prisma`](../backend/prisma/schema.prisma) e nas migrations SQL ao lado dele. Mudanças desde esta versão: recorrência virou parcelamento com repetição (a tabela `regra_recorrencia` deixou de existir), `horizonte_recorrencia_meses` saiu, e o espaço ganhou `timezone` e `currency`.
 
 Script para o SQL Editor do Supabase. Valores em centavos (`integer`), nomes em snake\_case. O login usa o `auth.users` do Supabase; a tabela `perfil` guarda os dados do usuário. Ainda não foi executado: rode primeiro num projeto de teste.
 
@@ -644,7 +649,7 @@ create table apelido_descricao (
 - `vw_gasto_participante`: consumo por participante (rateio ou 100% do responsável, desconto proporcional).
 - `vw_contas_a_pagar`: títulos abertos fora de cartão + faturas não pagas (valor = saldo anterior + total + previsto − pago).
 - Constraints via migration SQL: valores positivos, `parcelaInicial ≤ numeroParcela ≤ quantidadeParcelas`, auditoria somente inserção.
-- Previsto no cartão = título aberto com `regraRecorrenciaId` e `faturaId`; parcelas são sempre realizadas.
+- Previsto no cartão = título aberto de uma série `RECURRING` com `faturaId`; parcelas são sempre realizadas.
 
 ## 18. Pendências para o futuro
 
