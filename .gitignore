@@ -1,0 +1,26 @@
+# Dependencies and build output
+node_modules/
+dist/
+build/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# Environment (copy .env.example to .env)
+.env
+.env.*
+!.env.example
+
+# Generated code and reports
+backend/src/generated/
+playwright-report/
+test-results/
+
+# Logs and editor files
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Local database files
+docker-container/
