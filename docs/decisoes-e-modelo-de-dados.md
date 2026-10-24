@@ -6,7 +6,7 @@ Documento de contexto com o histórico consolidado das decisões de arquitetura 
 
 - Sistema de **finanças pessoais compartilhado** (casal/família no mesmo espaço).
 - Escopo: contas a pagar e a receber, categorias, centros de custo, relatórios, cartões, parcelamentos, recorrências, fluxo de caixa e conciliação bancária.
-- Moeda única: BRL. Valores sempre em **centavos (Int)** e **positivos**; o sinal vem do tipo/direção.
+- **Uma moeda por espaço** (padrão BRL), sem câmbio. Valores sempre **inteiros na unidade menor da moeda** (centavos, no real) e **positivos**; o sinal vem do tipo/direção. Detalhes em [convenções](convencoes.md).
 - Foco do produto: **controlar os gastos do próximo mês**.
 - Ciclo do dinheiro: **Título → Baixa → MovimentoConta → Conciliação**, com auditoria em tudo.
 
